@@ -10,20 +10,42 @@ from textblob import TextBlob
 import re
 import nltk
 
-# Ensure necessary NLTK data is downloaded
-nltk.download('punkt')
-nltk.download('stopwords')
-nltk.download('wordnet')
+# Download NLTK data only if needed
+nltk.data.path.append("/home/appuser/nltk_data")  # Ensure NLTK uses correct path
+nltk.download('punkt', quiet=True)
+nltk.download('stopwords', quiet=True)
+nltk.download('wordnet', quiet=True)
 
 # Load summarization model
 summarization_pipeline = pipeline("summarization", model="facebook/bart-large-cnn")
 
-# Function to summarize text
+# Function to summarize text in chunks
 def summarize_text(text, max_length=500):
-    if len(text) > 1024:  # Transformers models have a limit, so split text
-        text = text[:1024]
-    summary = summarization_pipeline(text, max_length=max_length, min_length=50, do_sample=False)
-    return summary[0]['summary_text']
+    sentences = text.split(". ")
+    chunk_size = 1024  # Transformer models have a limit
+
+    chunks = []
+    current_chunk = ""
+    
+    for sentence in sentences:
+        if len(current_chunk) + len(sentence) < chunk_size:
+            current_chunk += sentence + ". "
+        else:
+            chunks.append(current_chunk)
+            current_chunk = sentence + ". "
+
+    if current_chunk:
+        chunks.append(current_chunk)
+
+    summary = []
+    for chunk in chunks:
+        try:
+            summarized = summarization_pipeline(chunk, max_length=max_length, min_length=50, do_sample=False)
+            summary.append(summarized[0]['summary_text'])
+        except Exception as e:
+            summary.append("[Error summarizing chunk]")
+
+    return " ".join(summary)
 
 # Function to extract keywords
 def extract_keywords(text):
@@ -87,17 +109,21 @@ def main():
                 st.error("Invalid YouTube URL.")
                 return
 
-            transcript = YouTubeTranscriptApi.get_transcript(video_id)
-            if not transcript:
-                st.error("Transcript not available.")
-                return
+            with st.spinner("Fetching transcript..."):
+                transcript = YouTubeTranscriptApi.get_transcript(video_id)
+                if not transcript:
+                    st.error("Transcript not available.")
+                    return
 
             video_text = ' '.join([line['text'] for line in transcript])
 
-            summary = summarize_text(video_text, max_length=max_summary_length)
-            keywords = extract_keywords(video_text)
-            topics = topic_modeling(video_text)
-            sentiment = TextBlob(video_text).sentiment
+            with st.spinner("Summarizing text..."):
+                summary = summarize_text(video_text, max_length=max_summary_length)
+
+            with st.spinner("Extracting keywords and topics..."):
+                keywords = extract_keywords(video_text)
+                topics = topic_modeling(video_text)
+                sentiment = TextBlob(video_text).sentiment
 
             st.subheader("Summary:")
             st.write(summary)
