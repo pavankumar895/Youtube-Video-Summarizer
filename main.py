@@ -10,14 +10,18 @@ from textblob import TextBlob
 import re
 import nltk
 
-# Ensure that necessary NLTK data is downloaded
+# Ensure necessary NLTK data is downloaded
 nltk.download('punkt')
 nltk.download('stopwords')
 nltk.download('wordnet')
 
+# Load summarization model
+summarization_pipeline = pipeline("summarization", model="facebook/bart-large-cnn")
+
 # Function to summarize text
-def summarize_text(text, max_length=50000):
-    summarization_pipeline = pipeline("summarization")
+def summarize_text(text, max_length=500):
+    if len(text) > 1024:  # Transformers models have a limit, so split text
+        text = text[:1024]
     summary = summarization_pipeline(text, max_length=max_length, min_length=50, do_sample=False)
     return summary[0]['summary_text']
 
@@ -30,79 +34,72 @@ def extract_keywords(text):
     words = [lemmatizer.lemmatize(word.lower()) for word in words if word.isalnum()]
     keywords = [word for word in words if word not in stop_words and len(word) > 1]
 
-    counter = CountVectorizer().fit_transform([' '.join(keywords)])
-    vocabulary = CountVectorizer().fit([' '.join(keywords)]).vocabulary_
+    vectorizer = CountVectorizer()
+    counter = vectorizer.fit_transform([' '.join(keywords)])
+    vocabulary = vectorizer.vocabulary_
     top_keywords = sorted(vocabulary, key=vocabulary.get, reverse=True)[:5]
 
     return top_keywords
 
-# Function to perform topic modeling (LDA)
+# Function for topic modeling
 def topic_modeling(text):
-    vectorizer = CountVectorizer(max_df=2, min_df=0.95, stop_words='english')
+    vectorizer = CountVectorizer(max_df=0.95, min_df=2, stop_words='english')
     tf = vectorizer.fit_transform([text])
-    lda_model = LatentDirichletAllocation(n_components=5, max_iter=5, learning_method='online', random_state=42)
+    
+    if tf.shape[1] == 0:
+        return ["Not enough unique words for topic modeling."]
+    
+    lda_model = LatentDirichletAllocation(n_components=3, max_iter=5, learning_method='online', random_state=42)
     lda_model.fit(tf)
+    
     feature_names = vectorizer.get_feature_names_out()
     topics = []
-    for topic_idx, topic in enumerate(lda_model.components_):
+    for topic in lda_model.components_:
         topics.append([feature_names[i] for i in topic.argsort()[:-6:-1]])
+    
     return topics
 
-# Function to extract YouTube video ID from URL
+# Extract YouTube video ID
 def extract_video_id(url):
-    video_id = None
     patterns = [
-        r'v=([^&]+)',  # Pattern for URLs with 'v=' parameter
-        r'youtu.be/([^?]+)',  # Pattern for shortened URLs
-        r'youtube.com/embed/([^?]+)'  # Pattern for embed URLs
+        r'v=([^&]+)',  
+        r'youtu.be/([^?]+)',  
+        r'youtube.com/embed/([^?]+)',  
+        r'/v/([^?]+)'  
     ]
     for pattern in patterns:
         match = re.search(pattern, url)
         if match:
-            video_id = match.group(1)
-            break
-    return video_id
+            return match.group(1)
+    return None
 
-# Main Streamlit app
+# Streamlit app
 def main():
     st.title("YouTube Video Summarizer")
 
-    # User input for YouTube video URL
     video_url = st.text_input("Enter YouTube Video URL:", "")
-
-    # User customization options
-    max_summary_length = st.slider("Max Summary Length:", 1000, 20000, 50000)
+    max_summary_length = st.slider("Max Summary Length:", 100, 500, 500)
 
     if st.button("Summarize"):
         try:
-            # Extract video ID from URL
             video_id = extract_video_id(video_url)
             if not video_id:
-                st.error("Invalid YouTube URL. Please enter a valid URL.")
+                st.error("Invalid YouTube URL.")
                 return
 
-            # Get transcript of the video
             transcript = YouTubeTranscriptApi.get_transcript(video_id)
             if not transcript:
-                st.error("Transcript not available for this video.")
+                st.error("Transcript not available.")
                 return
 
             video_text = ' '.join([line['text'] for line in transcript])
 
-            # Summarize the transcript
             summary = summarize_text(video_text, max_length=max_summary_length)
-
-            # Extract keywords from the transcript
             keywords = extract_keywords(video_text)
-
-            # Perform topic modeling
             topics = topic_modeling(video_text)
-
-            # Perform sentiment analysis
             sentiment = TextBlob(video_text).sentiment
 
-            # Display summarized text, keywords, topics, and sentiment
-            st.subheader("Video Summary:")
+            st.subheader("Summary:")
             st.write(summary)
 
             st.subheader("Keywords:")
